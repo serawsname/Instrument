@@ -172,6 +172,7 @@ module.exports = (supabase, authenticateToken) => {
             user_id: parseInt(user_id),
             test_type: 'leveltestone',
             test_id: leveltestone_id,
+            instrument_id: instrument_id,
             unlocked_at: new Date().toISOString()
           }, {
             onConflict: 'user_id,test_type,test_id'
@@ -179,6 +180,12 @@ module.exports = (supabase, authenticateToken) => {
 
         if (unlockError) {
           console.error('Error saving user unlock:', unlockError);
+          // ส่งกลับ error ให้ client เพื่อช่วย debug
+          return res.status(500).json({
+            status: 'error',
+            message: 'บันทึกการปลดล็อก leveltestone ไม่สำเร็จ',
+            error: unlockError.message
+          });
         }
       }
 
