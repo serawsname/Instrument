@@ -72,7 +72,7 @@ module.exports = (supabase) => {
       
       // 4. ตั้งค่าเนื้อหาอีเมล
       const mailOptions = {
-        from: `"${appName}" <${process.env.EMAIL_USER || process.env.EMAIL_FROM || ''}>`,
+        from: `"${appName}" <${process.env.EMAIL_FROM || process.env.EMAIL_USER || ''}>`,
         to: email,
         subject: `รหัสยืนยันตัวตนสำหรับ ${appName}`,
         html: `
@@ -101,23 +101,28 @@ module.exports = (supabase) => {
         `,
       };
 
-      // 5. พยายามส่งผ่าน Resend ก่อน (HTTP API ไม่ถูกบล็อก)
-      if (process.env.RESEND_API_KEY && process.env.EMAIL_FROM) {
+      // 5. เลือกผู้ให้บริการจาก ENV: RESEND หรือ SMTP
+      const EMAIL_PROVIDER = (process.env.EMAIL_PROVIDER || '').toUpperCase() || (process.env.RESEND_API_KEY ? 'RESEND' : 'SMTP');
+
+      if (EMAIL_PROVIDER === 'RESEND') {
+        if (!process.env.RESEND_API_KEY || !mailOptions.from) {
+          return res.status(500).json({ status: 'error', message: 'Resend ยังไม่ได้ตั้งค่า (RESEND_API_KEY หรือ EMAIL_FROM)' });
+        }
         const r = await sendViaResend({
-          from: process.env.EMAIL_FROM,
+          from: mailOptions.from.replace(/.*<(.+)>.*/,'$1'),
           to: email,
-          subject: `รหัสยืนยันตัวตนสำหรับ ${appName}`,
+          subject: mailOptions.subject,
           html: mailOptions.html,
         });
         if (r.ok) {
           return res.status(200).json({ status: 'success', message: 'รหัส OTP ถูกส่งไปยังอีเมลของคุณแล้ว' });
         }
-        console.warn('Resend send failed, switching to SMTP:', r.message);
+        return res.status(500).json({ status: 'error', message: `ส่งผ่าน Resend ล้มเหลว: ${r.message || 'unknown error'}` });
       }
 
-      // 6. หากไม่ได้ตั้งค่า Resend หรือส่งล้มเหลว ให้ใช้ SMTP
+      // หากไม่ใช้ RESEND ให้ใช้ SMTP เท่านั้น
       if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        return res.status(500).json({ status: 'error', message: 'การตั้งค่า SMTP ไม่สมบูรณ์ และ Resend ไม่พร้อมใช้งาน' });
+        return res.status(500).json({ status: 'error', message: 'การตั้งค่า SMTP ไม่สมบูรณ์' });
       }
 
       const transporter = nodemailer.createTransport({
@@ -136,9 +141,7 @@ module.exports = (supabase) => {
         await transporter.sendMail(mailOptions);
         return res.status(200).json({ status: 'success', message: 'รหัส OTP ถูกส่งไปยังอีเมลของคุณแล้ว' });
       } catch (error) {
-        // หาก timeout และกำลังใช้พอร์ต 587 ให้ลอง fallback เป็น 465/SSL
         if (error && error.code === 'ETIMEDOUT' && SMTP_PORT !== 465) {
-          console.warn('⚠️ SMTP timeout on port', SMTP_PORT, '— retrying with port 465');
           const fallbackTransporter = nodemailer.createTransport({
             host: SMTP_HOST,
             port: 465,
