@@ -5,35 +5,24 @@ const nodemailer = require('nodemailer');
 module.exports = (supabase) => {
   const router = express.Router();
 
-  // ตั้งค่าการเชื่อมต่อ SMTP จาก ENV (รองรับ fallback ไปพอร์ต 465)
-  const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
-  const SMTP_PORT = Number(process.env.SMTP_PORT || 465); // ใช้ 465 เป็นค่าเริ่มต้นเพื่อ SSL
-  const SMTP_SECURE = process.env.SMTP_SECURE
-    ? String(process.env.SMTP_SECURE).toLowerCase() === 'true'
-    : SMTP_PORT === 465;
-
-  // helper: ส่งเมลผ่าน Resend (HTTP API) หากตั้งค่าไว้
-  async function sendViaResend({ from, to, subject, html }) {
-    const apiKey = process.env.RESEND_API_KEY;
-    if (!apiKey || !from) return { ok: false, message: 'Resend not configured' };
-    try {
-      const resp = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({ from, to, subject, html }),
-      });
-      if (!resp.ok) {
-        const text = await resp.text();
-        return { ok: false, message: `Resend error ${resp.status}: ${text}` };
-      }
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, message: err?.message || String(err) };
-    }
+  // ตรวจสอบว่ามี Environment Variables ครบถ้วนหรือไม่
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.error("❌ Critical Error: Missing EMAIL_USER or EMAIL_PASS in .env file.");
+    // ใน production อาจจะโยน error เพื่อหยุดการทำงานของ server
+    // throw new Error("Email configuration is missing.");
   }
+  
+  // ตั้งค่า Nodemailer Transporter
+  const transporter = nodemailer.createTransport({
+    // ⭐️ ใช้ host แทน service เพื่อความแม่นยำ
+    host: 'smtp.gmail.com', 
+    port: 587, // Port สำหรับ TLS/STARTTLS
+    secure: false, // true สำหรับ port 465, false สำหรับ port อื่นๆ
+    auth: {
+      user: process.env.EMAIL_USER, // อีเมลผู้ส่ง (เช่น your-email@gmail.com)
+      pass: process.env.EMAIL_PASS, // App Password ที่สร้างจาก Google Account
+    },
+  });
 
   router.post('/send-otp', async (req, res) => {
     const { email } = req.body;
@@ -43,7 +32,6 @@ module.exports = (supabase) => {
     }
 
     try {
-
       // 1. ตรวจสอบว่ามีผู้ใช้ที่ใช้อีเมลนี้ในระบบหรือไม่
       const { data: user, error: userError } = await supabase
         .from('user')
@@ -70,9 +58,9 @@ module.exports = (supabase) => {
       // ⭐️ ชื่อแอปของคุณ สามารถเปลี่ยนได้ที่นี่
       const appName = "Thai Instrument Quiz"; 
       
-      // 4. ตั้งค่าเนื้อหาอีเมล
+      // 4. ตั้งค่าและส่งอีเมลด้วย Nodemailer
       const mailOptions = {
-        from: `"${appName}" <${process.env.EMAIL_FROM || process.env.EMAIL_USER || ''}>`,
+        from: `"${appName}" <${process.env.EMAIL_USER}>`,
         to: email,
         subject: `รหัสยืนยันตัวตนสำหรับ ${appName}`,
         html: `
@@ -101,64 +89,8 @@ module.exports = (supabase) => {
         `,
       };
 
-      // 5. เลือกผู้ให้บริการจาก ENV: RESEND หรือ SMTP
-      const EMAIL_PROVIDER = (process.env.EMAIL_PROVIDER || '').toUpperCase() || (process.env.RESEND_API_KEY ? 'RESEND' : 'SMTP');
-
-      if (EMAIL_PROVIDER === 'RESEND') {
-        if (!process.env.RESEND_API_KEY || !mailOptions.from) {
-          return res.status(500).json({ status: 'error', message: 'Resend ยังไม่ได้ตั้งค่า (RESEND_API_KEY หรือ EMAIL_FROM)' });
-        }
-        const r = await sendViaResend({
-          from: mailOptions.from.replace(/.*<(.+)>.*/,'$1'),
-          to: email,
-          subject: mailOptions.subject,
-          html: mailOptions.html,
-        });
-        if (r.ok) {
-          return res.status(200).json({ status: 'success', message: 'รหัส OTP ถูกส่งไปยังอีเมลของคุณแล้ว' });
-        }
-        return res.status(500).json({ status: 'error', message: `ส่งผ่าน Resend ล้มเหลว: ${r.message || 'unknown error'}` });
-      }
-
-      // หากไม่ใช้ RESEND ให้ใช้ SMTP เท่านั้น
-      if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        return res.status(500).json({ status: 'error', message: 'การตั้งค่า SMTP ไม่สมบูรณ์' });
-      }
-
-      const transporter = nodemailer.createTransport({
-        host: SMTP_HOST,
-        port: SMTP_PORT,
-        secure: SMTP_SECURE,
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS,
-        },
-        connectionTimeout: 15000,
-        socketTimeout: 15000,
-      });
-
-      try {
-        await transporter.sendMail(mailOptions);
-        return res.status(200).json({ status: 'success', message: 'รหัส OTP ถูกส่งไปยังอีเมลของคุณแล้ว' });
-      } catch (error) {
-        if (error && error.code === 'ETIMEDOUT' && SMTP_PORT !== 465) {
-          const fallbackTransporter = nodemailer.createTransport({
-            host: SMTP_HOST,
-            port: 465,
-            secure: true,
-            auth: {
-              user: process.env.EMAIL_USER,
-              pass: process.env.EMAIL_PASS,
-            },
-            connectionTimeout: 15000,
-            socketTimeout: 15000,
-          });
-          await fallbackTransporter.sendMail(mailOptions);
-          return res.status(200).json({ status: 'success', message: 'รหัส OTP ถูกส่งไปยังอีเมลของคุณแล้ว (fallback)' });
-        }
-        console.error('❌ Error sending OTP:', error);
-        return res.status(500).json({ status: 'error', message: 'เกิดข้อผิดพลาดในการส่ง OTP กรุณาลองใหม่อีกครั้ง' });
-      }
+      await transporter.sendMail(mailOptions);
+      return res.status(200).json({ status: 'success', message: 'รหัส OTP ถูกส่งไปยังอีเมลของคุณแล้ว' });
 
     } catch (error) {
       console.error('❌ Error sending OTP:', error);
