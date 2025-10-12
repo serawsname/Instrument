@@ -14,9 +14,14 @@ services:
         sync: false
       - key: JWT_SECRET
         sync: false
-      - key: PORT
-        value: 3000
       - key: EMAIL_USER
         sync: false
       - key: EMAIL_PASS
         sync: false
+      # SMTP settings for Nodemailer (default to Gmail SSL)
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 465
+      - key: SMTP_SECURE
+        value: true
